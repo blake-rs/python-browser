@@ -10,17 +10,21 @@ import ssl
 class URL:
     def __init__(self, url):
         self.scheme, url = url.split("://", 1)
-        assert self.scheme in ["http", "https"]  # browser only supports http
+        assert self.scheme in ["http", "https"]
 
         if self.scheme == "http":
             self.port = 80
         elif self.scheme == "https":
-            self.port = 443  # HTTP connections usually use port 443 instead
+            self.port = 443  # HTTPS connections usually use port 443 instead
 
         if "/" not in url:
             url += "/"
         self.host, url = url.split("/", 1)
         self.path = "/" + url
+
+        if ":" in self.host:
+            self.host, port = self.host.split(":", 1)
+            self.port = int(port)
 
     def request(self):
         s = socket.socket(
@@ -35,7 +39,19 @@ class URL:
             ctx = ssl.create_default_context()
             s = ctx.wrap_socket(s, server_hostname=self.host)
 
-        request = f"GET {self.path} HTTP/1.0\r\nHost: {self.host}\r\n\r\n"
+        headers = {
+            "Host": self.host,
+            "Connection": "close",
+            "User-Agent": "PythonBrowser",  # change to whatever you want
+        }
+
+        request_lines = [f"GET {self.path} HTTP/1.1"]
+        request_lines += [f"{key}: {value}" for key, value in headers.items()]
+        request_lines.append("")  # blank line signals end of headers
+        request_lines.append("")  # extra for the \r\n after headers
+
+        request = "\r\n".join(request_lines)
+
         s.send(request.encode("utf8"))
 
         response = s.makefile("r", encoding="utf8", newline="\r\n")
