@@ -9,6 +9,13 @@ import ssl
 
 class URL:
     def __init__(self, url):
+        if url.startswith("data"):
+            self.scheme = "data"
+            self.host = ""
+            self.port = None
+            self.path = url  # use directly
+            return
+
         if "://" not in url:
             # Treat as a local file path
             self.scheme = "file"
@@ -36,10 +43,6 @@ class URL:
             self.port = None
             self.path = "/" + url.lstrip("/")  # normalise to absolute path
 
-        elif self.scheme == "data":
-            self.host = ""
-            self.port = None
-            self.path = url  # store the full data payload
         else:
             raise ValueError(f"Unsupported URL scheme: {self.scheme}")
 
@@ -52,7 +55,7 @@ class URL:
             except FileNotFoundError:
                 return f"File not found: {self.path}"
 
-        # Handle data: URLs
+        # Handle data URLs
         if self.scheme == "data":
             # Format: data:[<mediatype>][;base64],<data>
             if "," not in self.path:
@@ -136,7 +139,10 @@ def load(url):
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1:
-        load(URL(sys.argv[1]))
+        # Allow data scheme inputs to have spaces by joining argv parts
+        url_string = " ".join(sys.argv[1:])
+        load(URL(url_string))
+
     else:
         import os
         # fallback for testing: open a local HTML file
