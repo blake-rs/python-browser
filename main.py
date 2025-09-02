@@ -5,8 +5,6 @@ to send HTTP requests and receive responses.
 
 import socket
 import ssl
-import sys
-import os
 
 
 class URL:
@@ -37,6 +35,11 @@ class URL:
             self.host = ""
             self.port = None
             self.path = "/" + url.lstrip("/")  # normalise to absolute path
+
+        elif self.scheme == "data":
+            self.host = ""
+            self.port = None
+            self.path = url  # store the full data payload
         else:
             raise ValueError(f"Unsupported URL scheme: {self.scheme}")
 
@@ -48,6 +51,23 @@ class URL:
                     return f.read()
             except FileNotFoundError:
                 return f"File not found: {self.path}"
+
+        # Handle data: URLs
+        if self.scheme == "data":
+            # Format: data:[<mediatype>][;base64],<data>
+            if "," not in self.path:
+                return "Malformed data: URL"
+
+            mediatype, data = self.path.split(",", 1)
+            if mediatype.endswith(";base64"):
+                import base64
+                try:
+                    return base64.b64decode(data).decode("utf8",
+                                                         errors="replace")
+                except Exception as e:
+                    return f"Base64 decode error: {e}"
+            else:
+                return data
 
         s = socket.socket(
             family=socket.AF_INET,
@@ -114,8 +134,10 @@ def load(url):
 
 
 if __name__ == "__main__":
+    import sys
     if len(sys.argv) > 1:
         load(URL(sys.argv[1]))
     else:
+        import os
         # fallback for testing: open a local HTML file
         load(URL("file://" + os.path.abspath("test.html")))
