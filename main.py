@@ -6,6 +6,7 @@ to send HTTP requests and receive responses.
 import socket
 import ssl
 import sys
+import os
 
 
 class URL:
@@ -36,6 +37,8 @@ class URL:
             self.host = ""
             self.port = None
             self.path = "/" + url.lstrip("/")  # normalise to absolute path
+        else:
+            raise ValueError(f"Unsupported URL scheme: {self.scheme}")
 
     def request(self):
         # Handle file:// URLs
@@ -111,4 +114,8 @@ def load(url):
 
 
 if __name__ == "__main__":
-    load(URL(sys.argv[1]))
+    if len(sys.argv) > 1:
+        load(URL(sys.argv[1]))
+    else:
+        # fallback for testing: open a local HTML file
+        load(URL("file://" + os.path.abspath("test.html")))
