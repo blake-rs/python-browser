@@ -122,13 +122,30 @@ class URL:
 
 def show(body):
     in_tag = False
+    in_entity = False
+    entity = ""
     for c in body:
         if c == "<":
             in_tag = True
         elif c == ">":
             in_tag = False
         elif not in_tag:
-            print(c, end="")
+            if c == "&":  # start of entity
+                in_entity = True
+                entity = "&"
+            elif in_entity:
+                entity += c
+                if c == ";":  # end of entity
+                    if entity == "&lt;":
+                        print("<", end="")
+                    elif entity == "&gt;":
+                        print(">", end="")
+                    else:
+                        print(entity, end="")  # unknown entity, print as-is
+                    in_entity = False
+                    entity = ""
+            else:
+                print(c, end="")
 
 
 def load(url):
