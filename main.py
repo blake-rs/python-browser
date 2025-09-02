@@ -5,28 +5,47 @@ to send HTTP requests and receive responses.
 
 import socket
 import ssl
+import sys
 
 
 class URL:
     def __init__(self, url):
+        if "://" not in url:
+            # Treat as a local file path
+            self.scheme = "file"
+            self.host = ""
+            self.port = None
+            self.path = url  # use directly
+            return
+
         self.scheme, url = url.split("://", 1)
-        assert self.scheme in ["http", "https"]
+        if self.scheme in ["http", "https"]:
+            # Default ports
+            self.port = 80 if self.scheme == "http" else 443
 
-        if self.scheme == "http":
-            self.port = 80
-        elif self.scheme == "https":
-            self.port = 443  # HTTPS connections usually use port 443 instead
+            if "/" not in url:
+                url += "/"
+            self.host, url = url.split("/", 1)
+            self.path = "/" + url
 
-        if "/" not in url:
-            url += "/"
-        self.host, url = url.split("/", 1)
-        self.path = "/" + url
+            if ":" in self.host:
+                self.host, port = self.host.split(":", 1)
+                self.port = int(port)
 
-        if ":" in self.host:
-            self.host, port = self.host.split(":", 1)
-            self.port = int(port)
+        elif self.scheme == "file":
+            self.host = ""
+            self.port = None
+            self.path = "/" + url.lstrip("/")  # normalise to absolute path
 
     def request(self):
+        # Handle file:// URLs
+        if self.scheme == "file":
+            try:
+                with open(self.path, "r", encoding="utf8") as f:
+                    return f.read()
+            except FileNotFoundError:
+                return f"File not found: {self.path}"
+
         s = socket.socket(
             family=socket.AF_INET,
             type=socket.SOCK_STREAM,
@@ -92,5 +111,4 @@ def load(url):
 
 
 if __name__ == "__main__":
-    import sys
     load(URL(sys.argv[1]))
