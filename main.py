@@ -9,6 +9,14 @@ import ssl
 
 class URL:
     def __init__(self, url):
+        if url.startswith("view-source:"):
+            self.scheme = "view-source"
+            self.target = url[len("view-source:"):]
+            self.host = ""
+            self.port = None
+            self.path = None
+            return
+
         if url.startswith("data"):
             self.scheme = "data"
             self.host = ""
@@ -47,6 +55,11 @@ class URL:
             raise ValueError(f"Unsupported URL scheme: {self.scheme}")
 
     def request(self):
+        # Handle view-source: URLs
+        if self.scheme == "view-source":
+            inner = URL(self.target)
+            return inner.request()
+
         # Handle file:// URLs
         if self.scheme == "file":
             try:
@@ -119,6 +132,8 @@ class URL:
 
         return content
 
+    def get_scheme(self):
+        return self.scheme
 
 def show(body):
     in_tag = False
@@ -150,7 +165,10 @@ def show(body):
 
 def load(url):
     body = url.request()
-    show(body)
+    if url.get_scheme() == "view-source":
+        print(body)
+    else:
+        show(body)
 
 
 if __name__ == "__main__":
