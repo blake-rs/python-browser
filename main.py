@@ -57,7 +57,9 @@ class URL:
         else:
             raise ValueError(f"Unsupported URL scheme: {self.scheme}")
 
-    def request(self):
+    def request(self, max_redirects=5):
+        redirects = 0
+        url = self
         # Handle view-source
         if self.scheme == "view-source":
             inner = URL(self.target)
@@ -87,80 +89,161 @@ class URL:
             else:
                 return data
 
-        # --- Persistent socket reuse ---
-        key = (self.host, self.port)
-        s = socket_cache.get(key)
+        while redirects < max_redirects:
+            # --- Persistent socket reuse ---
+            key = (url.host, url.port)
+            s = socket_cache.get(key)
 
-        if s is None:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect((self.host, self.port))
+            if s is None:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.connect((url.host, url.port))
 
-            if self.scheme == "https":
-                ctx = ssl.create_default_context()
-                s = ctx.wrap_socket(s, server_hostname=self.host)
+                if url.scheme == "https":
+                    ctx = ssl.create_default_context()
+                    s = ctx.wrap_socket(s, server_hostname=url.host)
 
-            socket_cache[key] = s
+                socket_cache[key] = s
 
-        # Send HTTP request
-        headers = {
-            "Host": self.host,
-            "Connection": "keep-alive",
-            "User-Agent": "PythonBrowser",
-        }
+            # Send HTTP request
+            headers = {
+                "Host": url.host,
+                "Connection": "keep-alive",
+                "User-Agent": "PythonBrowser",
+            }
 
-        request_lines = [f"GET {self.path} HTTP/1.1"]
-        request_lines += [f"{key}: {value}" for key, value in headers.items()]
-        request_lines.append("")
-        request_lines.append("")
+            request_lines = [f"GET {url.path} HTTP/1.1"]
+            request_lines += [f"{key}: {value}" for key, value in
+                              headers.items()]
+            request_lines.append("")
+            request_lines.append("")
 
-        request = "\r\n".join(request_lines)
+            request = "\r\n".join(request_lines)
 
-        try:
-            s.send(request.encode("utf8"))
-            response = s.makefile("rb")  # binary mode
-        except (BrokenPipeError, OSError):
-            # Server closed connection -> make new socket
-            s.close()
-            socket_cache.pop(key, None)
+            try:
+                s.send(request.encode("utf8"))
+                response = s.makefile("rb")  # binary mode
+            except (BrokenPipeError, OSError):
+                # Server closed connection -> make new socket
+                try:
+                    s.close()
+                except OSError:
+                    pass
+                socket_cache.pop(key, None)
 
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect((self.host, self.port))
-            if self.scheme == "https":
-                ctx = ssl.create_default_context()
-                s = ctx.wrap_socket(s, server_hostname=self.host)
-            socket_cache[key] = s
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.connect((url.host, url.port))
+                if url.scheme == "https":
+                    ctx = ssl.create_default_context()
+                    s = ctx.wrap_socket(s, server_hostname=url.host)
+                socket_cache[key] = s
 
-            s.send(request.encode("utf8"))
-            response = s.makefile("rb")
+                s.send(request.encode("utf8"))
+                response = s.makefile("rb")
 
-        # Parse response
-        statusline = response.readline().decode("utf8")
-        version, status, explanation = statusline.split(" ", 2)
+            # Parse response
+            statusline = response.readline().decode("utf8")
+            version, status, explanation = statusline.split(" ", 2)
+            status = int(status)
 
-        response_headers = {}
-        while True:
-            line = response.readline().decode("utf8")
-            if line == "\r\n":
-                break
-            header, value = line.split(":", 1)
-            response_headers[header.casefold()] = value.strip()
+            response_headers = {}
+            while True:
+                line = response.readline().decode("utf8")
+                if line == "\r\n":
+                    break
+                header, value = line.split(":", 1)
+                response_headers[header.casefold()] = value.strip()
 
-        self.content_length = response_headers.get("content-length")
+            self.content_length = response_headers.get("content-length")
 
-        assert "transfer-encoding" not in response_headers
-        assert "content-encoding" not in response_headers
+            # --- redirect handling (robust) ---
+            if 300 <= status < 400 and "location" in response_headers:
+                location = response_headers["location"]
 
-        # Read only content-length bytes if present
-        if self.content_length is not None:
-            length = int(self.content_length)
-            content = response.read(length)
-        else:
-            # fallback if no length given
-            content = response.read()
-        return content.decode("utf8", errors="replace")
+                # If Content-Length known, drain those bytes so socket is clean
+                # drain anybody if Content-Length known
+                if self.content_length is not None:
+                    try:
+                        _ = response.read(int(self.content_length))
+                    except (OSError, ValueError):
+                        pass  # ignore read errors
+
+                # close response
+                try:
+                    response.close()
+                except (OSError, ValueError):
+                    pass
+
+                # shutdown and close socket
+                try:
+                    s.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass  # socket might already be closed
+                try:
+                    s.close()
+                except OSError:
+                    pass
+
+                # remove from cache
+                socket_cache.pop(key, None)
+
+                # Resolve Location:
+                # - absolute (http(s)://...)
+                # - scheme-relative (//host/path)
+                # - absolute-path (/path)
+                # - relative (index.html or ../x)
+                if location.startswith("http://") or location.startswith(
+                        "https://"):
+                    url = URL(location)
+                elif location.startswith("//"):
+                    # keep current scheme
+                    url = URL(f"{url.scheme}:{location}")
+                elif location.startswith("/"):
+                    url = URL(f"{url.scheme}://{url.host}{location}")
+                else:
+                    # relative path resolution (use posixpath for URL paths)
+                    import posixpath
+                    base_dir = posixpath.dirname(url.path)
+                    # ensure base_dir ends with '/'
+                    if not base_dir.endswith("/"):
+                        base_dir = base_dir + "/"
+                    new_path = posixpath.normpath(
+                        posixpath.join(base_dir, location))
+                    if not new_path.startswith("/"):
+                        new_path = "/" + new_path
+                    url = URL(f"{url.scheme}://{url.host}{new_path}")
+
+                redirects += 1
+                continue  # follow the redirect with the new url
+
+            # --- not a redirect: read body normally ---
+            assert "transfer-encoding" not in response_headers
+            assert "content-encoding" not in response_headers
+
+            # Read only content-length bytes if present
+            if self.content_length is not None:
+                length = int(self.content_length)
+                content = response.read(length)
+            else:
+                # fallback if no length given: read until connection closed by
+                # server, then drop socket from cache (server will close for us)
+                content = response.read()
+                try:
+                    response.close()
+                except OSError:
+                    pass
+                try:
+                    s.close()
+                except OSError:
+                    pass
+                socket_cache.pop(key, None)
+
+            return content.decode("utf8", errors="replace")
+
+        return "Too many redirects"
 
     def get_scheme(self):
         return self.scheme
+
 
 def show(body):
     in_tag = False
