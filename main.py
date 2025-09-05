@@ -6,9 +6,13 @@ to send HTTP requests and receive responses.
 import socket
 import ssl
 
+# Cache for persistent sockets
+socket_cache = {}  # key: (host, port), value: socket
+
 
 class URL:
     def __init__(self, url):
+        self.content_length = None
         if url.startswith("view-source:"):
             self.scheme = "view-source"
             self.target = url[len("view-source:"):]
@@ -29,7 +33,7 @@ class URL:
             self.scheme = "file"
             self.host = ""
             self.port = None
-            self.path = url  # use directly
+            self.path = url
             return
 
         self.scheme, url = url.split("://", 1)
@@ -49,13 +53,12 @@ class URL:
         elif self.scheme == "file":
             self.host = ""
             self.port = None
-            self.path = "/" + url.lstrip("/")  # normalise to absolute path
-
+            self.path = "/" + url.lstrip("/")
         else:
             raise ValueError(f"Unsupported URL scheme: {self.scheme}")
 
     def request(self):
-        # Handle view-source: URLs
+        # Handle view-source
         if self.scheme == "view-source":
             inner = URL(self.target)
             return inner.request()
@@ -70,7 +73,6 @@ class URL:
 
         # Handle data URLs
         if self.scheme == "data":
-            # Format: data:[<mediatype>][;base64],<data>
             if "," not in self.path:
                 return "Malformed data: URL"
 
@@ -85,52 +87,77 @@ class URL:
             else:
                 return data
 
-        s = socket.socket(
-            family=socket.AF_INET,
-            type=socket.SOCK_STREAM,
-            proto=socket.IPPROTO_TCP,
-        )
+        # --- Persistent socket reuse ---
+        key = (self.host, self.port)
+        s = socket_cache.get(key)
 
-        s.connect((self.host, self.port))
+        if s is None:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect((self.host, self.port))
 
-        if self.scheme == "https":
-            ctx = ssl.create_default_context()
-            s = ctx.wrap_socket(s, server_hostname=self.host)
+            if self.scheme == "https":
+                ctx = ssl.create_default_context()
+                s = ctx.wrap_socket(s, server_hostname=self.host)
 
+            socket_cache[key] = s
+
+        # Send HTTP request
         headers = {
             "Host": self.host,
-            "Connection": "close",
-            "User-Agent": "PythonBrowser",  # change to whatever you want
+            "Connection": "keep-alive",
+            "User-Agent": "PythonBrowser",
         }
 
         request_lines = [f"GET {self.path} HTTP/1.1"]
         request_lines += [f"{key}: {value}" for key, value in headers.items()]
-        request_lines.append("")  # blank line signals end of headers
-        request_lines.append("")  # extra for the \r\n after headers
+        request_lines.append("")
+        request_lines.append("")
 
         request = "\r\n".join(request_lines)
 
-        s.send(request.encode("utf8"))
+        try:
+            s.send(request.encode("utf8"))
+            response = s.makefile("rb")  # binary mode
+        except (BrokenPipeError, OSError):
+            # Server closed connection -> make new socket
+            s.close()
+            socket_cache.pop(key, None)
 
-        response = s.makefile("r", encoding="utf8", newline="\r\n")
-        statusline = response.readline()
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect((self.host, self.port))
+            if self.scheme == "https":
+                ctx = ssl.create_default_context()
+                s = ctx.wrap_socket(s, server_hostname=self.host)
+            socket_cache[key] = s
+
+            s.send(request.encode("utf8"))
+            response = s.makefile("rb")
+
+        # Parse response
+        statusline = response.readline().decode("utf8")
         version, status, explanation = statusline.split(" ", 2)
 
         response_headers = {}
         while True:
-            line = response.readline()
+            line = response.readline().decode("utf8")
             if line == "\r\n":
                 break
             header, value = line.split(":", 1)
             response_headers[header.casefold()] = value.strip()
 
+        self.content_length = response_headers.get("content-length")
+
         assert "transfer-encoding" not in response_headers
         assert "content-encoding" not in response_headers
 
-        content = response.read()
-        s.close()
-
-        return content
+        # Read only content-length bytes if present
+        if self.content_length is not None:
+            length = int(self.content_length)
+            content = response.read(length)
+        else:
+            # fallback if no length given
+            content = response.read()
+        return content.decode("utf8", errors="replace")
 
     def get_scheme(self):
         return self.scheme
