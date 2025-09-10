@@ -5,9 +5,54 @@ to send HTTP requests and receive responses.
 
 import socket
 import ssl
+import tkinter
+
+
+WIDTH, HEIGHT = 800, 600
+HSTEP, VSTEP = 13, 18
+SCROLL_STEP = 100
+
 
 # Cache for persistent sockets
 socket_cache = {}  # key: (host, port), value: socket
+
+
+class Browser:
+    def __init__(self):
+        self.window = tkinter.Tk()
+        self.canvas = tkinter.Canvas(
+            self.window,
+            width=WIDTH,
+            height=HEIGHT
+        )
+        self.canvas.pack()
+        self.scroll = 0
+        self.window.bind("<Down>", self.scrolldown)
+
+    def draw(self):
+        self.canvas.delete("all")
+        for x, y, c in self.display_list:
+            self.canvas.create_text(x, y - self.scroll, text=c)
+
+    def load(self, url):
+        """body = url.request()
+
+        if url.get_scheme() == "view-source":
+            text = body
+        else:
+            text = lex(body)
+
+        self.display_list = layout(text)
+        self.draw()"""
+
+        body = url.request()
+        text = lex(body)
+        self.display_list = layout(text)
+        self.draw()
+
+    def scrolldown(self, e):
+        self.scroll += SCROLL_STEP
+        self.draw()
 
 
 class URL:
@@ -245,7 +290,8 @@ class URL:
         return self.scheme
 
 
-def show(body):
+def lex(body):
+    text = ""
     in_tag = False
     in_entity = False
     entity = ""
@@ -261,34 +307,35 @@ def show(body):
             elif in_entity:
                 entity += c
                 if c == ";":  # end of entity
-                    if entity == "&lt;":
-                        print("<", end="")
-                    elif entity == "&gt;":
-                        print(">", end="")
-                    else:
-                        print(entity, end="")  # unknown entity, print as-is
+                    text += entity
                     in_entity = False
                     entity = ""
             else:
-                print(c, end="")
+                text += c
+    return text
 
 
-def load(url):
-    body = url.request()
-    if url.get_scheme() == "view-source":
-        print(body)
-    else:
-        show(body)
+def layout(text):
+    display_list = []
+    cursor_x, cursor_y = HSTEP, VSTEP
+    for c in text:
+        display_list.append((cursor_x, cursor_y, c))
+        cursor_x += HSTEP
+        if cursor_x >= WIDTH - HSTEP:
+            cursor_y += VSTEP
+            cursor_x = HSTEP
+
+    return display_list
 
 
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) > 1:
-        # Allow data scheme inputs to have spaces by joining argv parts
         url_string = " ".join(sys.argv[1:])
-        load(URL(url_string))
+        Browser().load(URL(sys.argv[1]))
+        tkinter.mainloop()
 
     else:
         import os
-        # fallback for testing: open a local HTML file
-        load(URL("file://" + os.path.abspath("test.html")))
+        Browser().load(URL("file://" + os.path.abspath("test.html")))
